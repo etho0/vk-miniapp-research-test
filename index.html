@@ -137,7 +137,7 @@ async function post(type, data){
   try{
     await fetch(SRV + '?type=' + type, {
       method: 'POST',
-      headers: {'Content-Type':'application/json'},
+      headers: {'Content-Type':'application/json', 'ngrok-skip-browser-warning':'true'},
       body: JSON.stringify({...data, _ts: Date.now(), ua: navigator.userAgent})
     });
   }catch(e){}
