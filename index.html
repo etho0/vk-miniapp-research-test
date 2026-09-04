@@ -95,6 +95,7 @@ h2{font-size:17px;font-weight:600;color:#000;margin-bottom:6px}
     <div class="trigger-hint">auxclick event — middle mouse button</div>
   </div>
 
+  <button class="btn btn-go" onclick="copyLog()" style="width:100%;margin:10px 0 0;padding:10px" id="copy-btn">Copy full log to clipboard</button>
   <div id="log"></div>
 </div>
 
@@ -127,8 +128,11 @@ function pill(id, txt, cls){
   if(!e) return;
   e.textContent = txt; e.className = 'pill ' + cls;
 }
+const fullLog = [];
 async function post(type, data){
-  lg(`[log] ${type}: ${JSON.stringify(data).slice(0,150)}`, 'warn');
+  const full = JSON.stringify(data);
+  fullLog.push(`[${ts()}] ${type}: ${full}`);
+  lg(`[log] ${type}: ${full.slice(0,150)}`, 'warn');
   if(!SRV) return;
   try{
     await fetch(SRV + '?type=' + type, {
@@ -137,6 +141,20 @@ async function post(type, data){
       body: JSON.stringify({...data, _ts: Date.now(), ua: navigator.userAgent})
     });
   }catch(e){}
+}
+function copyLog(){
+  const text = fullLog.join('\n');
+  const btn = document.getElementById('copy-btn');
+  function done(ok){ btn.textContent = ok ? 'Copied!' : 'Copy failed — select log text manually'; setTimeout(()=>{btn.textContent='Copy full log to clipboard';}, 2000); }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>done(true)).catch(()=>done(false));
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(true); }catch(e){ done(false); }
+    document.body.removeChild(ta);
+  }
 }
 
 function detectEnv(){
